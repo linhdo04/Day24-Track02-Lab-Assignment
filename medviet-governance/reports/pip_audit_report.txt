@@ -1,0 +1,4 @@
+pip-audit result
+================
+Scope: installed packages in medviet-governance/.venv
+Result: PASS — no known vulnerabilities found

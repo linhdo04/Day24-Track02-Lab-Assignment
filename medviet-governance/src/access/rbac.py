@@ -1,55 +1,58 @@
-# src/access/rbac.py
-import casbin
+"""Casbin role-based access control and FastAPI dependencies."""
+
 from functools import wraps
-from fastapi import HTTPException, Header
+from pathlib import Path
 from typing import Optional
 
-# Danh sách user giả lập (production dùng JWT + DB)
+import casbin
+from fastapi import Header, HTTPException, status
+
 MOCK_USERS = {
     "token-alice": {"username": "alice", "role": "admin"},
-    "token-bob":   {"username": "bob",   "role": "ml_engineer"},
+    "token-bob": {"username": "bob", "role": "ml_engineer"},
     "token-carol": {"username": "carol", "role": "data_analyst"},
-    "token-dave":  {"username": "dave",  "role": "intern"},
+    "token-dave": {"username": "dave", "role": "intern"},
 }
 
-enforcer = casbin.Enforcer("src/access/model.conf", "src/access/policy.csv")
+ACCESS_DIR = Path(__file__).resolve().parent
+enforcer = casbin.Enforcer(str(ACCESS_DIR / "model.conf"), str(ACCESS_DIR / "policy.csv"))
+
 
 def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
-    """
-    TODO: Parse Bearer token và trả về user info.
-    Raise HTTPException 401 nếu token không hợp lệ.
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=___, detail="Missing token")
-
-    token = authorization.split(" ")[1]
+    """Authenticate a mock bearer token used by the lab API."""
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     user = MOCK_USERS.get(token)
-
     if not user:
-        raise HTTPException(status_code=___, detail="Invalid token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user.copy()
 
-    return user
 
 def require_permission(resource: str, action: str):
-    """
-    TODO: Decorator kiểm tra RBAC permission.
-    Dùng casbin enforcer để check (role, resource, action).
-    Raise HTTPException 403 nếu không có quyền.
-    """
+    """Require a Casbin permission for an async FastAPI route."""
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            # Lấy current_user từ kwargs (FastAPI inject qua Depends)
             current_user = kwargs.get("current_user")
+            if not current_user:
+                raise HTTPException(status_code=401, detail="Missing authenticated user")
             role = current_user["role"]
-
-            allowed = enforcer.enforce(___, ___, ___)  # TODO
-
-            if not allowed:
+            if not enforcer.enforce(role, resource, action):
                 raise HTTPException(
-                    status_code=___,    # TODO: HTTP status code
-                    detail=f"Role '{role}' cannot '{action}' on '{resource}'"
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Role '{role}' cannot '{action}' on '{resource}'",
                 )
             return await func(*args, **kwargs)
+
         return wrapper
+
     return decorator

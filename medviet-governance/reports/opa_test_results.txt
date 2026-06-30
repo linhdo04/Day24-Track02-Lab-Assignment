@@ -1,0 +1,8 @@
+OPA 1.18.1 policy test results
+==============================
+PASS: test_admin_can_read_raw_data
+PASS: test_ml_engineer_cannot_delete_production
+PASS: test_analyst_can_read_aggregates
+PASS: test_restricted_export_outside_vietnam_is_denied
+
+Result: PASS 4/4

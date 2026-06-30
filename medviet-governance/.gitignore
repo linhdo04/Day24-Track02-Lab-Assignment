@@ -1,0 +1,8 @@
+.vault_key
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.venv/
+.spacy_models/
+reports/*.tmp
+data/raw/*.csv

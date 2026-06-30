@@ -1,123 +1,95 @@
-# src/encryption/vault.py
-import os
+"""Local envelope-encryption example using AES-256-GCM."""
+
+from __future__ import annotations
+
 import base64
-import hashlib
+import json
+import os
+from pathlib import Path
+
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.backends import default_backend
+
 
 class SimpleVault:
-    """
-    Mô phỏng envelope encryption pattern (thay thế AWS KMS cho local dev).
-    
-    Architecture:
-        Master Key (KEK) → encrypts → Data Key (DEK) → encrypts → Data
-    """
+    """Use a local KEK to wrap one fresh data-encryption key per payload."""
 
     def __init__(self, master_key_path: str = ".vault_key"):
-        self.master_key_path = master_key_path
+        self.master_key_path = Path(master_key_path)
         self.kek = self._load_or_create_kek()
 
     def _load_or_create_kek(self) -> bytes:
-        """
-        TODO: Load KEK từ file nếu tồn tại, 
-              ngược lại generate 32-byte random key và lưu vào file.
-        QUAN TRỌNG: Trong production, KEK phải lưu trong HSM/KMS, không phải file.
-        """
-        if os.path.exists(self.master_key_path):
-            with open(self.master_key_path, "rb") as f:
-                return base64.b64decode(f.read())
-        else:
-            kek = os.urandom(32)  # 256-bit key
-            with open(self.master_key_path, "wb") as f:
-                f.write(base64.b64encode(kek))
-            return kek
+        if self.master_key_path.exists():
+            try:
+                key = base64.b64decode(self.master_key_path.read_bytes(), validate=True)
+            except (ValueError, OSError) as exc:
+                raise ValueError("Vault key file is not valid base64") from exc
+            if len(key) != 32:
+                raise ValueError("Vault KEK must be exactly 32 bytes")
+            return key
+
+        self.master_key_path.parent.mkdir(parents=True, exist_ok=True)
+        key = AESGCM.generate_key(bit_length=256)
+        encoded = base64.b64encode(key)
+        descriptor = os.open(
+            self.master_key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+        )
+        with os.fdopen(descriptor, "wb") as key_file:
+            key_file.write(encoded)
+        return key
 
     def generate_dek(self) -> tuple[bytes, bytes]:
-        """
-        TODO: Generate một Data Encryption Key (DEK) mới.
-        Trả về (plaintext_dek, encrypted_dek).
-        Dùng AESGCM để encrypt DEK bằng KEK.
-        """
-        plaintext_dek = os.urandom(32)
-
-        # Encrypt DEK bằng KEK
-        aesgcm = AESGCM(self.kek)
+        plaintext_dek = AESGCM.generate_key(bit_length=256)
         nonce = os.urandom(12)
-        encrypted_dek = nonce + aesgcm.encrypt(nonce, plaintext_dek, None)
-
+        encrypted_dek = nonce + AESGCM(self.kek).encrypt(
+            nonce, plaintext_dek, b"medviet-dek-v1"
+        )
         return plaintext_dek, encrypted_dek
 
     def decrypt_dek(self, encrypted_dek: bytes) -> bytes:
-        """
-        TODO: Decrypt encrypted DEK bằng KEK.
-        Trả về plaintext DEK.
-        """
-        nonce = encrypted_dek[:12]
-        ciphertext = encrypted_dek[12:]
-        aesgcm = AESGCM(self.kek)
-        return aesgcm.decrypt(nonce, ciphertext, None)
+        if len(encrypted_dek) < 29:  # 12-byte nonce + at least 1 byte + 16-byte tag
+            raise ValueError("Encrypted DEK is malformed")
+        nonce, ciphertext = encrypted_dek[:12], encrypted_dek[12:]
+        return AESGCM(self.kek).decrypt(nonce, ciphertext, b"medviet-dek-v1")
 
     def encrypt_data(self, plaintext: str) -> dict:
-        """
-        TODO: Implement envelope encryption.
-        1. Generate DEK mới
-        2. Encrypt data bằng plaintext DEK
-        3. Xóa plaintext DEK khỏi memory
-        4. Trả về dict chứa encrypted_dek và ciphertext (base64 encoded)
-        
-        Return format:
-        {
-            "encrypted_dek": "<base64>",
-            "ciphertext": "<base64>",
-            "algorithm": "AES-256-GCM"
-        }
-        """
         plaintext_dek, encrypted_dek = self.generate_dek()
-
-        # TODO: encrypt data bằng plaintext_dek
-        aesgcm = AESGCM(plaintext_dek)
         nonce = os.urandom(12)
-        ciphertext = ___   # TODO
-
-        # Xóa plaintext DEK
+        ciphertext = AESGCM(plaintext_dek).encrypt(
+            nonce, str(plaintext).encode("utf-8"), b"medviet-data-v1"
+        )
         del plaintext_dek
-
         return {
-            "encrypted_dek": base64.b64encode(encrypted_dek).decode(),
-            "ciphertext": base64.b64encode(nonce + ciphertext).decode(),
-            "algorithm": "AES-256-GCM"
+            "encrypted_dek": base64.b64encode(encrypted_dek).decode("ascii"),
+            "ciphertext": base64.b64encode(nonce + ciphertext).decode("ascii"),
+            "algorithm": "AES-256-GCM",
         }
 
     def decrypt_data(self, encrypted_payload: dict) -> str:
-        """
-        TODO: Decrypt data từ envelope encryption payload.
-        1. Decrypt DEK bằng KEK
-        2. Decrypt data bằng DEK
-        3. Trả về plaintext string
-        """
-        encrypted_dek = base64.b64decode(encrypted_payload["encrypted_dek"])
-        ciphertext_with_nonce = base64.b64decode(encrypted_payload["ciphertext"])
+        if encrypted_payload.get("algorithm") != "AES-256-GCM":
+            raise ValueError("Unsupported encryption algorithm")
+        try:
+            encrypted_dek = base64.b64decode(
+                encrypted_payload["encrypted_dek"], validate=True
+            )
+            payload = base64.b64decode(encrypted_payload["ciphertext"], validate=True)
+        except (KeyError, ValueError) as exc:
+            raise ValueError("Encrypted payload is malformed") from exc
+        if len(payload) < 29:
+            raise ValueError("Ciphertext is malformed")
 
-        # TODO: implement decryption
-        plaintext_dek = ___   # TODO
-        nonce = ___           # TODO (first 12 bytes)
-        ciphertext = ___      # TODO (remaining bytes)
-
-        aesgcm = AESGCM(plaintext_dek)
-        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
-        del plaintext_dek
-
-        return plaintext.decode()
-
-    def encrypt_column(self, df, column: str) -> pd.DataFrame:
-        """
-        TODO: Encrypt một cột trong DataFrame.
-        Thay thế giá trị gốc bằng JSON string của encrypted payload.
-        """
-        import json
-        df = df.copy()
-        df[column] = df[column].apply(
-            lambda x: json.dumps(self.encrypt_data(str(x)))
+        plaintext_dek = self.decrypt_dek(encrypted_dek)
+        nonce, ciphertext = payload[:12], payload[12:]
+        plaintext = AESGCM(plaintext_dek).decrypt(
+            nonce, ciphertext, b"medviet-data-v1"
         )
-        return df
+        del plaintext_dek
+        return plaintext.decode("utf-8")
+
+    def encrypt_column(self, df, column: str):
+        if column not in df:
+            raise KeyError(f"Column not found: {column}")
+        encrypted_df = df.copy()
+        encrypted_df[column] = encrypted_df[column].map(
+            lambda value: json.dumps(self.encrypt_data(str(value)), sort_keys=True)
+        )
+        return encrypted_df

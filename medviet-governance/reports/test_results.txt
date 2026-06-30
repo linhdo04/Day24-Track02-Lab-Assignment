@@ -1,0 +1,13 @@
+MedViet governance test run
+===========================
+Result: 13 passed, 0 failed
+
+Coverage exercised:
+- Vietnamese CCCD, phone and email detection
+- PII detection rate >= 95% (observed pipeline rate: 100%)
+- Dataframe anonymization and preservation of ML feature columns
+- FastAPI authentication and Casbin role permissions
+- AES-256-GCM envelope encryption and tamper detection
+- Anonymized dataset quality/privacy validation
+
+See test_results.xml for the machine-readable pytest report.

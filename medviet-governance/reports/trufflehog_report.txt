@@ -1,0 +1,8 @@
+TruffleHog 3.95.7 Git history scan
+=================================
+Repository: Day24-Track02-Lab-Assignment
+Chunks scanned: 31
+Bytes scanned: 105,201
+Verified secrets: 0
+Unverified secrets: 0
+Result: PASS
